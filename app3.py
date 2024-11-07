@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from typing import List
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
 from llama_index import groq
-from langchain.embeddings.groq import GROQEmbeddings
+from langchain.embeddings.groq import GroqEmbeddings
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import QueryEngineTool, FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
