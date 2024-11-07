@@ -1,0 +1,1 @@
+This Python script creates a Streamlit web app that allows users to generate a custom playlist based on a search query. The app fetches relevant songs from a search engine (via LLama Index). It then creates a playlist with those recommended songs.
