@@ -5,13 +5,12 @@ import streamlit as st
 from dotenv import load_dotenv
 from typing import List
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
-from langchain.llms import OpenAI  # Use OpenAI from langchain
-from langchain.embeddings.openai import OpenAIEmbeddings  # Use OpenAI embeddings from langchain
+from llama_index import groq
+from langchain.embeddings.groq import GROQEmbeddings
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import QueryEngineTool, FunctionTool
 from llama_index.core.memory import ChatMemoryBuffer
 
-# Load environment variables from .env file
 load_dotenv()
 
 # Function to create a Spotify playlist with the recommended songs
@@ -77,12 +76,11 @@ class PlaylistGeneratorWithLlamaIndex:
         return VectorStoreIndex.from_documents(documents)
 
     def create_agent(self):
-        """Create an agent with the ability to query the index."""
-        # Initialize OpenAI as the LLM (You will need to set the OpenAI API key in your .env file)
-        llm = OpenAI(model="text-davinci-003", api_key=os.getenv("OPENAI_API_KEY"))
+        """Create an agent with the ability to query the index."""        
+        llm = Groq(model="text-davinci-003", api_key=os.getenv("GROQ_API_KEY"))
         
         # Use OpenAI for embeddings via langchain's OpenAIEmbeddings
-        embed_model = OpenAIEmbeddings(model="text-davinci-003", openai_api_key=os.getenv("OPENAI_API_KEY"))
+        embed_model = GroqEmbeddings(model="text-davinci-003", openai_api_key=os.getenv("GROQ_API_KEY"))
 
         
         query_engine = self.index.as_query_engine(llm=llm, embed_model=embed_model, similarity_top_k=3)
@@ -102,7 +100,6 @@ class PlaylistGeneratorWithLlamaIndex:
             
             if not tracks:
                 return "No song recommendations found."
-            
             recommendations = [f"{track['name']} by {track['artists'][0]['name']}" for track in tracks]
             return "\n".join(recommendations)
 
@@ -125,14 +122,8 @@ class PlaylistGeneratorWithLlamaIndex:
         
         # Get the refined query from the agent's response
         refined_query = response.response
-        
-        # Fetch song recommendations based on the refined query
         playlist_songs = self.agent.tools[1].fn(refined_query)
-        
-        # Convert the song recommendations into a list
         song_list = playlist_songs.split("\n")
-        
-        # Create the Spotify playlist
         playlist_url = create_spotify_playlist(user_id, "Generated Playlist", song_list)
         
         return playlist_url
@@ -153,14 +144,10 @@ def main():
             st.error("Please enter both a Spotify user ID and a playlist query.")
             return
         
-        # Path to your data directory (you should place your music-related documents here)
-        data_path = "data/music_data"  # Adjust this path to your directory containing music-related documents
-
-        # Instantiate the playlist generator
+        data_path = "data/music_data"  
         playlist_generator = PlaylistGeneratorWithLlamaIndex(data_path=data_path)
 
         try:
-            # Generate the playlist and display the link
             playlist_url = playlist_generator.generate_playlist(user_query, user_id)
             st.success("Your personalized playlist has been generated!")
             st.markdown(playlist_url)
