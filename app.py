@@ -1,129 +1,209 @@
 import os
-import random
+from typing import List
+
+import spotipy
 import streamlit as st
 from dotenv import load_dotenv
-import requests
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
-from typing import List, Tuple, Dict
+from spotipy.oauth2 import SpotifyOAuth
 
-# Load environment variables
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.core.agent import ReActAgent
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.tools import FunctionTool, QueryEngineTool
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.groq import Groq
+
 load_dotenv()
 
-# Retrieve API keys and credentials
-serperdev_api_key = os.getenv("SERPERDEV_API_KEY")
-groq_api_key = os.getenv("GROQ_API_KEY")
-spotipy_client_id = os.getenv("SPOTIPY_CLIENT_ID")
-spotipy_client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
+REQUIRED_ENV_VARS = [
+    "SPOTIPY_CLIENT_ID",
+    "SPOTIPY_CLIENT_SECRET",
+    "SPOTIPY_REDIRECT_URI",
+    "GROQ_API_KEY",
+]
 
-# Set up Spotify client
-spotify = spotipy.Spotify(
-    client_credentials_manager=SpotifyClientCredentials(
-        client_id=spotipy_client_id,
-        client_secret=spotipy_client_secret
-    )
-)
 
-# Function to fetch playlist data from Serper API
-def fetch_playlist_data(query: str) -> Dict:
-    headers = {
-        'Authorization': f'Bearer {serperdev_api_key}',
-        'Content-Type': 'application/json'
-    }
-    try:
-        response = requests.get(
-            f'https://google.serper.dev/search?q=&apiKey=3985e8024153834462bacff357bacea200546eff',
-            params={'q': query},
-            headers=headers,
-            timeout=10
+def check_env_vars() -> List[str]:
+    """Return a list of missing required environment variables."""
+    return [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+
+
+def get_spotify_client() -> spotipy.Spotify:
+    """Create an authenticated Spotify client."""
+    return spotipy.Spotify(
+        auth_manager=SpotifyOAuth(
+            client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+            client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+            redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+            scope="playlist-modify-private",
         )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching data from Serper: {e}")
-        return {'organic': []}
+    )
 
-# Function to create playlist based on user query
-def create_playlist(query: str) -> Tuple[str, List[str]]:
-    search_results = fetch_playlist_data(query)
-    relevant_songs = [result['title'] for result in search_results.get('organic', []) if 'title' in result]
 
-    if not relevant_songs:
-        return "No songs found.", []
-    
-    return relevant_songs
+def create_spotify_playlist(
+    sp: spotipy.Spotify, user_id: str, playlist_name: str, song_list: List[str]
+) -> str:
+    """
+    Creates a Spotify playlist and adds the matched songs to it.
 
-# Function to recommend similar songs using Spotify
-def recommend_similar_songs(song_title: str, num_recommendations: int) -> List[str]:
-    try:
-        search_results = spotify.search(q=song_title, type='track', limit=1)
-        tracks = search_results['tracks']['items']
-        
-        if not tracks:
-            return ["No similar songs found."]
-        
-        track_id = tracks[0]['id']
-        recommendations = spotify.recommendations(seed_tracks=[track_id], limit=num_recommendations)
-        similar_songs = [f"{track['name']} by {track['artists'][0]['name']}" 
-                         for track in recommendations['tracks']]
-        
-        return similar_songs
-    except Exception as e:
-        st.error(f"Error getting recommendations: {e}")
-        return ["Error fetching recommendations."]
-        
-def generate_playlist(self, user_query: str, user_id: str) -> str:
+    :param sp: authenticated Spotify client
+    :param user_id: Spotify user ID
+    :param playlist_name: Name of the playlist to be created
+    :param song_list: List of song names (and artists) to search for and add
+    :return: A status message including the playlist URL and any songs that
+             could not be matched
+    """
+    playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
+    playlist_id = playlist["id"]
+
+    track_uris = []
+    not_found = []
+    for song in song_list:
+        song = song.strip()
+        if not song:
+            continue
+        search_results = sp.search(q=song, type="track", limit=1)
+        items = search_results["tracks"]["items"]
+        if items:
+            track_uris.append(items[0]["uri"])
+        else:
+            not_found.append(song)
+
+    if track_uris:
+        sp.playlist_add_items(playlist_id, track_uris)
+
+    playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+    message = f"Your playlist has been created! [Open Playlist]({playlist_url})"
+    if not_found:
+        message += "\n\nCouldn't find a match for:\n" + "\n".join(
+            f"- {s}" for s in not_found
+        )
+    return message
+
+
+class PlaylistGeneratorWithLlamaIndex:
+    def __init__(self, data_path: str):
+        """Initialize with LlamaIndex and Spotify API."""
+        self.data_path = data_path
+        self.sp = get_spotify_client()
+        self.index = self.create_index()
+        self.song_tool = None  # set inside create_agent
+        self.agent = self.create_agent()
+
+    def create_index(self):
+        """Create a new index from documents (no persistence)."""
+        documents = SimpleDirectoryReader(self.data_path).load_data()
+        if not documents:
+            raise ValueError("No documents found in the specified path.")
+        return VectorStoreIndex.from_documents(documents)
+
+    def create_agent(self) -> ReActAgent:
+        """Create an agent with the ability to query the index and search Spotify."""
+        llm = Groq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+
+        # Groq doesn't serve embeddings, so use a local HuggingFace model instead.
+        embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+
+        query_engine = self.index.as_query_engine(
+            llm=llm, embed_model=embed_model, similarity_top_k=3
+        )
+
+        search_tool = QueryEngineTool(
+            query_engine=query_engine,
+            metadata={
+                "name": "document_search",
+                "description": "Search through a document corpus to refine song recommendations",
+            },
+        )
+
+        def song_recommendation_function(query: str) -> str:
+            """Fetch Spotify recommendations based on a filtered query string."""
+            search_results = self.sp.search(q=query, type="track", limit=5)
+            tracks = search_results["tracks"]["items"]
+            if not tracks:
+                return "No song recommendations found."
+            recommendations = [
+                f"{track['name']} by {track['artists'][0]['name']}" for track in tracks
+            ]
+            return "\n".join(recommendations)
+
+        self.song_tool = FunctionTool.from_defaults(
+            fn=song_recommendation_function,
+            name="song_recommendations",
+            description="Fetches song recommendations from Spotify based on a filtered query",
+        )
+
+        return ReActAgent.from_tools(
+            [search_tool, self.song_tool],
+            llm=llm,
+            verbose=True,
+            memory=ChatMemoryBuffer.from_defaults(token_limit=4096),
+        )
+
+    def generate_playlist(self, user_query: str, user_id: str) -> str:
         """Generate a playlist based on the user's query and create it on Spotify."""
-        response = self.agent.chat(user_query)
-        
-        # Get the refined query from the agent's response
-        refined_query = response.response
-        
-        # Fetch song recommendations based on the refined query
-        playlist_songs = self.agent.tools[1].fn(refined_query)
-        
-        # Convert the song recommendations into a list
-        song_list = playlist_songs.split("\n")
-        
-        # Create the Spotify playlist
-        playlist_url = create_spotify_playlist(user_id, "Generated Playlist", song_list)
-        
-        return playlist_url
+        prompt = (
+            f"{user_query}\n\n"
+            "Use the document_search tool to understand relevant themes/genres, "
+            "then use the song_recommendations tool to fetch actual matching tracks. "
+            "Finish by returning ONLY the final list of songs, one per line, "
+            "in the format 'Song Title by Artist'. Do not include any other commentary."
+        )
+        response = self.agent.chat(prompt)
 
-# Streamlit interface
+        song_list = [
+            line.strip("-* \t")
+            for line in str(response).splitlines()
+            if line.strip()
+        ]
+
+        if not song_list:
+            raise ValueError("The agent did not return any song recommendations.")
+
+        return create_spotify_playlist(self.sp, user_id, "Generated Playlist", song_list)
+
+
+@st.cache_resource(show_spinner="Loading music library and model...")
+def get_playlist_generator(data_path: str) -> PlaylistGeneratorWithLlamaIndex:
+    return PlaylistGeneratorWithLlamaIndex(data_path=data_path)
+
+
 def main():
-    st.title("ChordCloud's Personalized Playlist Recommender")
+    st.title("ChordCloud's Personalized Playlist Generator")
 
-    # Input for user's Spotify username
+    missing = check_env_vars()
+    if missing:
+        st.error(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+            + ". Add them to your .env file before continuing."
+        )
+        return
+
     user_id = st.text_input("Enter your Spotify user ID:")
+    user_query = st.text_area(
+        "Describe the playlist you want (e.g., 'Relaxing music for studying'):"
+    )
 
-    # Input for playlist query
-    user_query = st.text_area("Describe the playlist you want (e.g., 'Relaxing music for studying'):") 
-    
-    if user_query:
-        relevant_songs = create_playlist(user_query)
+    if st.button("Generate Playlist"):
+        if not user_query or not user_id:
+            st.error("Please enter both a Spotify user ID and a playlist query.")
+            return
 
-        if relevant_songs:
-            # Let the user choose how many recommendations to generate
-            num_recommendations = st.slider("How many songs would you like?", min_value=1, max_value=30, value=5)
-            # Generate similar songs based on the first song in the playlist
-            similar_songs = recommend_similar_songs(relevant_songs[0], num_recommendations)
+        data_path = "data/music_data"
+        if not os.path.isdir(data_path):
+            st.error(f"Data path '{data_path}' not found. Add your music docs there first.")
+            return
 
-            st.subheader("Recommended Songs:")
-            for i, song in enumerate(similar_songs, 1):
-                st.write(f"{i}. {song}")
-
-            # Spotify authentication
-            REDIRECT_URI = "https://chordcloud/callback"
-            scope = "playlist-modify-private"
-            sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=spotipy_client_id,
-                                                           client_secret=spotipy_client_secret,
-                                                           redirect_uri=REDIRECT_URI,
-                                                           scope=scope))
-
-        
+        try:
+            with st.spinner("Generating your playlist..."):
+                playlist_generator = get_playlist_generator(data_path)
+                result_message = playlist_generator.generate_playlist(user_query, user_id)
+            st.success("Your personalized playlist has been generated!")
+            st.markdown(result_message)
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 
-# Run the Streamlit app
 if __name__ == "__main__":
     main()

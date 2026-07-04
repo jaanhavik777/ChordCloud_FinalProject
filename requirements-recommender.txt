@@ -1,0 +1,9 @@
+pandas
+numpy
+scikit-learn
+jupyter
+nbformat
+nbconvert
+# Optional: only needed if calling ContentBasedRecommender.get_live_audio_features(),
+# i.e. you have grandfathered Spotify API access to the deprecated audio-features endpoint
+spotipy

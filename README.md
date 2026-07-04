@@ -1,87 +1,94 @@
-# ChordCloud AI-Powered Music Recommendation System
+# ChordCloud — AI-Powered Music Recommendation System
 
-An intelligent music recommendation system that delivers personalized song suggestions by combining **collaborative filtering** and **content-based filtering**. The system leverages Spotify's audio features to recommend tracks that align with users' listening preferences.
+Two related but independent pieces:
 
-## Features
+1. **`app.py`** — a Streamlit app that uses a LlamaIndex RAG agent (Groq LLM +
+   local embeddings) to interpret natural-language playlist requests, search
+   a document corpus for relevant themes, and generate a matching Spotify
+   playlist via the Spotify Web API.
+2. **`music_recommender.py`** — a standalone recommendation engine
+   demonstrating collaborative filtering, content-based filtering, and a
+   hybrid approach, with real offline evaluation. Decoupled from the app so
+   it can be run, tested, and cited on its own. See
+   `music_recommendation_analysis.ipynb` for a runnable walkthrough.
 
-- Personalized music recommendations
-- Hybrid recommendation engine combining:
-  - Collaborative Filtering
-  - Content-Based Filtering
-- Real-time audio feature extraction using the Spotify Web API
-- Similarity-based recommendation generation
-- Scalable recommendation pipeline for new users and songs
+## Setup
 
----
+```bash
+# For the Streamlit app
+pip install -r requirements.txt
 
-## Tech Stack
+# For the recommender module / notebook
+pip install -r requirements-recommender.txt
+```
 
-- Python
-- Pandas
-- NumPy
-- Scikit-learn
-- Spotify Web API
-- Spotipy
-- Matplotlib (optional for visualizations)
+Create a `.env` file (for `app.py`) with:
+```
+SPOTIPY_CLIENT_ID=...
+SPOTIPY_CLIENT_SECRET=...
+SPOTIPY_REDIRECT_URI=...
+GROQ_API_KEY=...
+```
 
----
+## Running the app
 
-## How It Works
+```bash
+streamlit run app.py
+```
 
-### 1. Data Collection
-- Fetches song metadata and audio features from the Spotify Web API.
-- Extracts attributes such as:
-  - Danceability
-  - Energy
-  - Tempo
-  - Valence
-  - Loudness
-  - Acousticness
-  - Instrumentalness
-  - Speechiness
+Add documents describing your music corpus under `data/music_data/` first
+(the app raises a clear error if that folder is missing or empty).
 
-### 2. Content-Based Recommendation
-- Represents songs using Spotify audio features.
-- Computes similarity between songs using feature vectors.
-- Recommends tracks with similar musical characteristics.
+## Running the recommender notebook
 
-### 3. Collaborative Filtering
-- Learns user preferences from listening history and ratings.
-- Identifies users with similar listening behavior.
-- Generates recommendations based on collective user interests.
+```bash
+jupyter notebook music_recommendation_analysis.ipynb
+```
 
-### 4. Hybrid Recommendation
-- Combines recommendations from both approaches to improve relevance and personalization.
+Uses the datasets in `data/`:
+- `lastfm-matrix-germany.csv` — public user-artist listening matrix (1,257
+  users × 285 artists), used for collaborative filtering.
+- `SpotifyFeatures.csv` — public precomputed Spotify audio-features dataset
+  (176,774 unique tracks, 27 genres), used for content-based filtering.
 
----
+## Running the tests
 
-## Results
+```bash
+pytest test_music_recommender.py -v
+```
 
-- Achieved **87% user satisfaction** during evaluation.
-- Generated personalized recommendations using a hybrid recommendation approach.
-- Successfully integrated Spotify audio features for improved recommendation quality.
+## A note on the Spotify audio-features data source
 
----
+Spotify deprecated the live `audio_features` / `audio_analysis` Web API
+endpoints for new third-party apps on November 27, 2024 — new apps get a 403
+with no official replacement. Because of that, `ContentBasedRecommender`
+loads audio features from the public precomputed dataset above rather than
+calling the live endpoint. A `get_live_audio_features()` static method is
+still included for anyone whose app has grandfathered extended-mode access.
 
-## Future Improvements
+## Real, reproducible numbers (not invented stats)
 
-- Deep learning-based recommendation models
-- Real-time user feedback integration
-- Playlist generation
-- Mood-aware recommendations
-- Web interface using Flask or React
-- Deployment using Docker and cloud services
+Re-run `evaluate_leave_one_out()` in the notebook any time the model or
+dataset changes — as of this build, on a 300-user sample:
 
----
+```
+hit_rate@10:  0.254
+precision@10: 0.025
+recall@10:    0.254
+```
 
-## Skills Demonstrated
+## Project structure
 
-- Machine Learning
-- Recommendation Systems
-- Collaborative Filtering
-- Content-Based Filtering
-- Feature Engineering
-- REST API Integration
-- Data Processing
-- Python
-- Spotify Web API
+```
+.
+├── app.py                                # Streamlit playlist-generator app
+├── requirements.txt                      # deps for app.py
+├── music_recommender.py                  # CF / content-based / hybrid recommender + eval
+├── requirements-recommender.txt          # deps for music_recommender.py / notebook
+├── test_music_recommender.py             # pytest unit tests
+├── music_recommendation_analysis.ipynb   # runnable demo + evaluation
+├── data/
+│   ├── lastfm-matrix-germany.csv         # CF dataset
+│   └── SpotifyFeatures.csv               # content-based dataset
+└── README.md
+```
